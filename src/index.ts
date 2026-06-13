@@ -1,59 +1,41 @@
-const CORS_HEADERS = {
-	'Access-Control-Allow-Origin': '*',
-	'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
-	'Access-Control-Allow-Headers': '*',
-	'Access-Control-Max-Age': '86400',
-} as const;
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
+import type { Context } from 'hono';
 
-function withCors(res: Response): Response {
-	const headers = new Headers(res.headers);
-	for (const [k, v] of Object.entries(CORS_HEADERS)) {
-		headers.set(k, v);
-	}
-	return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+const app = new Hono<{ Bindings: Env }>();
+
+app.use(
+	'*',
+	cors({
+		origin: '*',
+		allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+		allowHeaders: ['*'],
+		maxAge: 86400,
+	}),
+);
+
+// Route same-session requests to the same model instance for prefix-cache hits.
+// https://developers.cloudflare.com/workers-ai/features/prompt-caching/
+function runOptions(c: Context) {
+	const affinity = c.req.header('Authorization') ?? c.req.header('CF-Connecting-IP') ?? '';
+	return { returnRawResponse: true, extraHeaders: { 'x-session-affinity': affinity } } as const;
 }
 
-function text(body: string, status: number): Response {
-	return new Response(body, { status, headers: CORS_HEADERS });
-}
+// Run a model by id, forwarding the request body verbatim: POST /run/@cf/<model>
+app.post('/run/:model{.+}', async (c) => {
+	const model = c.req.param('model') as keyof AiModels;
+	const inputs = await c.req.json<Record<string, unknown>>();
+	return c.env.AI.run(model, inputs, runOptions(c));
+});
 
-export default {
-	async fetch(request, env): Promise<Response> {
-		if (request.method === 'OPTIONS') {
-			return new Response(null, { status: 204, headers: CORS_HEADERS });
-		}
+// OpenAI-compatible chat completions: POST /v1/chat/completions with `model` in the body.
+app.post('/v1/chat/completions', async (c) => {
+	const { model, ...payload } = await c.req.json<{ model: string } & Record<string, unknown>>();
+	const modelId = (model.startsWith('@') ? model : `@cf/${model}`) as keyof AiModels;
+	const inputs: Record<string, unknown> = { chat_template_kwargs: { thinking: true, preserve_thinking: true }, ...payload };
+	return c.env.AI.run(modelId, inputs, runOptions(c));
+});
 
-		const { pathname } = new URL(request.url);
+app.notFound((c) => c.text('not found\n', 404));
 
-		const affinity = request.headers.get('Authorization') ?? request.headers.get('CF-Connecting-IP') ?? '';
-		const runOpts = {
-			returnRawResponse: true,
-			headers: { 'x-session-affinity': affinity },
-		} as const;
-
-		// Run a model by id, forwarding the request body verbatim: POST /run/@cf/<model>
-		if (pathname.startsWith('/run/')) {
-			if (request.method !== 'POST') {
-				return text('method not allowed\n', 405);
-			}
-			const model = pathname.slice('/run/'.length) as keyof AiModels;
-			const inputs = await request.json<Record<string, unknown>>();
-			const res = await env.AI.run(model, inputs, runOpts);
-			return withCors(res);
-		}
-
-		// OpenAI-style endpoint: POST /v1/... with `model` in the JSON body.
-		if (pathname.startsWith('/v1/')) {
-			if (request.method !== 'POST') {
-				return text('method not allowed\n', 405);
-			}
-			const { model, ...payload } = await request.json<{ model: string } & Record<string, unknown>>();
-			const modelId = (model.startsWith('@') ? model : `@cf/${model}`) as keyof AiModels;
-			const inputs: Record<string, unknown> = { chat_template_kwargs: { thinking: true, preserve_thinking: true }, ...payload };
-			const res = await env.AI.run(modelId, inputs, runOpts);
-			return withCors(res);
-		}
-
-		return text('not found\n', 404);
-	},
-} satisfies ExportedHandler<Env>;
+export default app;
