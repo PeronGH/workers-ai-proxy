@@ -66,7 +66,8 @@ app.post('/v1/chat/completions', async (c) => {
 
 	const modelId = (model.startsWith('@') ? model : `@cf/${model}`) as keyof AiModels;
 
-	const thinking = !!reasoning_effort && reasoning_effort !== 'none';
+	// Thinking is on by default; only an explicit reasoning_effort of "none" disables it.
+	const thinking = reasoning_effort !== 'none';
 	const inputs: CustomInputs = {
 		...payload,
 		// Models on Workers AI generally don't support the OpenAI "developer" role.
