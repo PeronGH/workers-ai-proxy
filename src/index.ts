@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Context } from 'hono';
+import type { ChatCompletionCreateParams } from 'openai/resources/chat/completions';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -30,7 +31,7 @@ app.post('/run/:model{.+}', async (c) => {
 
 // OpenAI-compatible chat completions: POST /v1/chat/completions with `model` in the body.
 app.post('/v1/chat/completions', async (c) => {
-	const { model, ...payload } = await c.req.json<{ model: string } & Record<string, unknown>>();
+	const { model, ...payload } = await c.req.json<ChatCompletionCreateParams>();
 	const modelId = (model.startsWith('@') ? model : `@cf/${model}`) as keyof AiModels;
 	const inputs: Record<string, unknown> = { chat_template_kwargs: { thinking: true, preserve_thinking: true }, ...payload };
 	return c.env.AI.run(modelId, inputs, runOptions(c));
