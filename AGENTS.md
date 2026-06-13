@@ -11,13 +11,18 @@ For all limits and quotas, retrieve from the product's `/platform/limits/` page.
 
 ## Commands
 
-| Command | Purpose |
-|---------|---------|
-| `npx wrangler dev` | Local development |
-| `npx wrangler deploy` | Deploy to Cloudflare |
-| `npx wrangler types` | Generate TypeScript types |
+This project uses **bun**. Use `bun`/`bunx`, not `npm`/`npx`.
 
-Run `wrangler types` after changing bindings in wrangler.jsonc.
+| Command              | Purpose                                      |
+| -------------------- | -------------------------------------------- |
+| `bun run dev`        | Local development (`wrangler dev`)           |
+| `bun run deploy`     | Deploy to Cloudflare                         |
+| `bun run cf-typegen` | Generate TypeScript types (`wrangler types`) |
+| `bun run typecheck`  | Type-check with `tsc --noEmit`               |
+| `bun run lint`       | ESLint + Prettier check                      |
+| `bun run format`     | Format with Prettier                         |
+
+Run `bun run cf-typegen` after changing bindings in wrangler.jsonc.
 
 ## Node.js Compatibility
 
