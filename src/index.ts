@@ -46,7 +46,7 @@ function filterChunk(line: string): string | null {
 // Route same-session requests to the same model instance for prefix-cache hits.
 // https://developers.cloudflare.com/workers-ai/features/prompt-caching/
 function runOptions(c: Context) {
-	const affinity = c.req.header('Authorization') ?? c.req.header('CF-Connecting-IP') ?? '';
+	const affinity = c.req.header('Authorization') ?? c.req.header('CF-Connecting-IP');
 	return { returnRawResponse: true, extraHeaders: { 'x-session-affinity': affinity } } as const;
 }
 
