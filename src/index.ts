@@ -26,6 +26,23 @@ app.use(
 	}),
 );
 
+// Drop SSE `data:` chunks whose JSON payload lacks a `choices` array (e.g. the usage-only
+// trailer). Everything else — the [DONE] sentinel, blank separators, non-JSON lines — is kept.
+function filterChunk(line: string): string | null {
+	if (!line.startsWith('data:')) {
+		return line;
+	}
+	const payload = line.slice('data:'.length);
+	let data: unknown;
+	try {
+		data = JSON.parse(payload);
+	} catch {
+		return line;
+	}
+	const hasChoices = typeof data === 'object' && data !== null && Array.isArray((data as Record<string, unknown>)['choices']);
+	return hasChoices ? line : null;
+}
+
 // Route same-session requests to the same model instance for prefix-cache hits.
 // https://developers.cloudflare.com/workers-ai/features/prompt-caching/
 function runOptions(c: Context) {
@@ -63,8 +80,8 @@ app.post('/v1/chat/completions', async (c) => {
 
 	if (!payload.stream || !res.body) return res;
 
-	// Re-emit the SSE stream one line at a time. Transform each line here.
-	const body = transformLines(res.body as ReadableStream<Uint8Array>, (line) => line);
+	// Re-emit the SSE stream one line at a time, dropping choice-less chunks.
+	const body = transformLines(res.body as ReadableStream<Uint8Array>, filterChunk);
 	return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
 });
 
