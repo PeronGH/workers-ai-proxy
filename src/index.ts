@@ -1,7 +1,17 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Context } from 'hono';
-import type { ChatCompletionCreateParams } from 'openai/resources/chat/completions';
+
+// Workers AI's typed chat_template_kwargs (enable_thinking/clear_thinking) doesn't cover the
+// thinking/preserve_thinking knobs these models expect, so override it with our own shape.
+type CustomInputs = Omit<ChatCompletionsInput, 'chat_template_kwargs'> & {
+	chat_template_kwargs: { thinking: boolean; preserve_thinking: boolean };
+};
+
+// OpenAI clients may send reasoning_effort: "none"; the Workers type only allows low/medium/high.
+type ChatBody = Omit<ChatCompletionsMessagesInput, 'reasoning_effort'> & {
+	reasoning_effort?: ChatCompletionsMessagesInput['reasoning_effort'] | 'none';
+};
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -31,10 +41,26 @@ app.post('/run/:model{.+}', async (c) => {
 
 // OpenAI-compatible chat completions: POST /v1/chat/completions with `model` in the body.
 app.post('/v1/chat/completions', async (c) => {
-	const { model, ...payload } = await c.req.json<ChatCompletionCreateParams>();
+	const { model, messages, reasoning_effort, ...payload } = await c.req.json<ChatBody>();
+	if (!model) {
+		return c.text('model is required\n', 400);
+	}
+
 	const modelId = (model.startsWith('@') ? model : `@cf/${model}`) as keyof AiModels;
-	const inputs: Record<string, unknown> = { chat_template_kwargs: { thinking: true, preserve_thinking: true }, ...payload };
-	return c.env.AI.run(modelId, inputs, runOptions(c));
+
+	const inputs: CustomInputs = {
+		...payload,
+		// Models on Workers AI generally don't support the OpenAI "developer" role.
+		messages: messages.map((m) => (m.role === 'developer' ? { ...m, role: 'system' } : m)),
+		chat_template_kwargs: { thinking: false, preserve_thinking: true },
+	};
+
+	if (reasoning_effort) {
+		inputs.chat_template_kwargs.thinking = reasoning_effort !== 'none';
+	}
+
+	// The typed `run` overloads can't model an arbitrary forwarded body; widen to hit the raw-response overload.
+	return c.env.AI.run(modelId, inputs as Record<string, unknown>, runOptions(c));
 });
 
 export default app;
