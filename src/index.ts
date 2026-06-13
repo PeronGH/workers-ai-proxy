@@ -36,6 +36,4 @@ app.post('/v1/chat/completions', async (c) => {
 	return c.env.AI.run(modelId, inputs, runOptions(c));
 });
 
-app.notFound((c) => c.text('not found\n', 404));
-
 export default app;
