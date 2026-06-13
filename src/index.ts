@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Context } from 'hono';
+import { transformLines } from './stream';
 
 // Different model chat templates read different thinking flags, so extend Workers AI's typed
 // kwargs (enable_thinking/clear_thinking) with the thinking/preserve_thinking knobs and set both.
@@ -58,7 +59,13 @@ app.post('/v1/chat/completions', async (c) => {
 	};
 
 	// The typed `run` overloads can't model an arbitrary forwarded body; widen to hit the raw-response overload.
-	return c.env.AI.run(modelId, inputs as Record<string, unknown>, runOptions(c));
+	const res = await c.env.AI.run(modelId, inputs as Record<string, unknown>, runOptions(c));
+
+	if (!payload.stream || !res.body) return res;
+
+	// Re-emit the SSE stream one line at a time. Transform each line here.
+	const body = transformLines(res.body as ReadableStream<Uint8Array>, (line) => line);
+	return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
 });
 
 export default app;
