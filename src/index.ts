@@ -2,10 +2,10 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Context } from 'hono';
 
-// Workers AI's typed chat_template_kwargs (enable_thinking/clear_thinking) doesn't cover the
-// thinking/preserve_thinking knobs these models expect, so override it with our own shape.
+// Different model chat templates read different thinking flags, so extend Workers AI's typed
+// kwargs (enable_thinking/clear_thinking) with the thinking/preserve_thinking knobs and set both.
 type CustomInputs = Omit<ChatCompletionsInput, 'chat_template_kwargs'> & {
-	chat_template_kwargs: { thinking: boolean; preserve_thinking: boolean };
+	chat_template_kwargs: ChatTemplateKwargs & { thinking: boolean; preserve_thinking: boolean };
 };
 
 // OpenAI clients may send reasoning_effort: "none"; the Workers type only allows low/medium/high.
@@ -48,16 +48,14 @@ app.post('/v1/chat/completions', async (c) => {
 
 	const modelId = (model.startsWith('@') ? model : `@cf/${model}`) as keyof AiModels;
 
+	const thinking = !!reasoning_effort && reasoning_effort !== 'none';
 	const inputs: CustomInputs = {
 		...payload,
 		// Models on Workers AI generally don't support the OpenAI "developer" role.
 		messages: messages.map((m) => (m.role === 'developer' ? { ...m, role: 'system' } : m)),
-		chat_template_kwargs: { thinking: false, preserve_thinking: true },
+		// preserve_thinking/clear_thinking are inverse: preserving reasoning context means not clearing it.
+		chat_template_kwargs: { thinking, enable_thinking: thinking, preserve_thinking: true, clear_thinking: false },
 	};
-
-	if (reasoning_effort) {
-		inputs.chat_template_kwargs.thinking = reasoning_effort !== 'none';
-	}
 
 	// The typed `run` overloads can't model an arbitrary forwarded body; widen to hit the raw-response overload.
 	return c.env.AI.run(modelId, inputs as Record<string, unknown>, runOptions(c));
