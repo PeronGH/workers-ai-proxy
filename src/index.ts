@@ -70,6 +70,8 @@ app.post('/v1/chat/completions', async (c) => {
 	const thinking = reasoning_effort !== 'none';
 	const inputs: CustomInputs = {
 		...payload,
+		temperature: payload.temperature ?? (thinking ? 1 : 0.7),
+		top_p: payload.top_p ?? 0.95,
 		// Models on Workers AI generally don't support the OpenAI "developer" role.
 		messages: messages.map((m) => (m.role === 'developer' ? { ...m, role: 'system' } : m)),
 		// preserve_thinking/clear_thinking are inverse: preserving reasoning context means not clearing it.
