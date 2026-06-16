@@ -1,7 +1,10 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { createMiddleware } from 'hono/factory';
 import type { Context } from 'hono';
 import { transformLines } from './stream';
+
+type Variables = { apiKey: string };
 
 // Different model chat templates read different thinking flags, so extend Workers AI's typed
 // kwargs (enable_thinking/clear_thinking) with the thinking/preserve_thinking knobs and set both.
@@ -14,7 +17,7 @@ type ChatBody = Omit<ChatCompletionsMessagesInput, 'reasoning_effort'> & {
 	reasoning_effort?: ChatCompletionsMessagesInput['reasoning_effort'] | 'none';
 };
 
-const app = new Hono<{ Bindings: Env }>();
+const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 app.use(
 	'*',
@@ -43,18 +46,37 @@ function filterChunk(line: string): string | null {
 	return hasChoices ? line : null;
 }
 
-// Route same-session requests to the same model instance for prefix-cache hits.
-// https://developers.cloudflare.com/workers-ai/features/prompt-caching/
-function runOptions(c: Context) {
-	const affinity = c.req.header('Authorization') ?? c.req.header('CF-Connecting-IP');
-	return { returnRawResponse: true, extraHeaders: { 'x-session-affinity': affinity } } as const;
+// Hash an API key into a stable, opaque token. Workers exposes MD5 through Web Crypto.
+async function md5Hex(input: string): Promise<string> {
+	const digest = await crypto.subtle.digest('MD5', new TextEncoder().encode(input));
+	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
+
+// Require an API key on every proxied request, stashing it for downstream session affinity.
+const requireApiKey = createMiddleware<{ Bindings: Env; Variables: Variables }>(async (c, next) => {
+	const auth = c.req.header('Authorization');
+	if (!auth) {
+		return c.text('API key is required\n', 401);
+	}
+	c.set('apiKey', auth.replace(/^Bearer\s+/i, ''));
+	return next();
+});
+
+// Route same-session requests to the same model instance for prefix-cache hits, keyed by a hash of
+// the API key so the raw key never leaves in upstream headers.
+// https://developers.cloudflare.com/workers-ai/features/prompt-caching/
+async function runOptions(c: Context<{ Bindings: Env; Variables: Variables }>) {
+	return { returnRawResponse: true, extraHeaders: { 'x-session-affinity': await md5Hex(c.get('apiKey')) } } as const;
+}
+
+app.use('/run/*', requireApiKey);
+app.use('/v1/*', requireApiKey);
 
 // Run a model by id, forwarding the request body verbatim: POST /run/@cf/<model>
 app.post('/run/:model{.+}', async (c) => {
 	const model = c.req.param('model') as keyof AiModels;
 	const inputs = await c.req.json<Record<string, unknown>>();
-	return c.env.AI.run(model, inputs, runOptions(c));
+	return c.env.AI.run(model, inputs, await runOptions(c));
 });
 
 // OpenAI-compatible chat completions: POST /v1/chat/completions with `model` in the body.
@@ -79,7 +101,7 @@ app.post('/v1/chat/completions', async (c) => {
 	};
 
 	// The typed `run` overloads can't model an arbitrary forwarded body; widen to hit the raw-response overload.
-	const res = await c.env.AI.run(modelId, inputs as Record<string, unknown>, runOptions(c));
+	const res = await c.env.AI.run(modelId, inputs as Record<string, unknown>, await runOptions(c));
 
 	if (!payload.stream || !res.body) return res;
 
