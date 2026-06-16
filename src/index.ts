@@ -62,12 +62,6 @@ const requireApiKey = createMiddleware<{ Bindings: Env; Variables: Variables }>(
 	return next();
 });
 
-// Log each proxied request once the response is ready, identified by the calling API key.
-const logRequests = createMiddleware<{ Bindings: Env; Variables: Variables }>(async (c, next) => {
-	await next();
-	console.log(JSON.stringify({ apiKey: c.get('apiKey'), method: c.req.method, path: c.req.path, status: c.res.status }));
-});
-
 // Route same-session requests to the same model instance for prefix-cache hits, keyed by a hash of
 // the API key so the raw key never leaves in upstream headers.
 // https://developers.cloudflare.com/workers-ai/features/prompt-caching/
@@ -75,8 +69,8 @@ async function runOptions(c: Context<{ Bindings: Env; Variables: Variables }>) {
 	return { returnRawResponse: true, extraHeaders: { 'x-session-affinity': await md5Hex(c.get('apiKey')) } } as const;
 }
 
-app.use('/run/*', requireApiKey, logRequests);
-app.use('/v1/*', requireApiKey, logRequests);
+app.use('/run/*', requireApiKey);
+app.use('/v1/*', requireApiKey);
 
 // Run a model by id, forwarding the request body verbatim: POST /run/@cf/<model>
 app.post('/run/:model{.+}', async (c) => {
