@@ -1,8 +1,12 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { createMiddleware } from 'hono/factory';
+import { HTTPException } from 'hono/http-exception';
 import type { Context } from 'hono';
-import { transformLines } from './stream';
+import { antReqToOaiReq, oaiResToAntRes, oaiStreamToAntStream } from '@peron_js/oai2ant';
+import type { OpenAIResponse, OpenAIStreamChunk } from '@peron_js/oai2ant';
+import type { MessageCreateParams } from '@anthropic-ai/sdk/resources/messages';
+import { parseSseData, sseFromItems } from './stream';
 
 type Variables = { apiKey: string };
 
@@ -29,23 +33,6 @@ app.use(
 	}),
 );
 
-// Drop SSE `data:` chunks whose JSON payload lacks a `choices` array (e.g. the usage-only
-// trailer). Everything else — the [DONE] sentinel, blank separators, non-JSON lines — is kept.
-function filterChunk(line: string): string | null {
-	if (!line.startsWith('data:')) {
-		return line;
-	}
-	const payload = line.slice('data:'.length);
-	let data: unknown;
-	try {
-		data = JSON.parse(payload);
-	} catch {
-		return line;
-	}
-	const hasChoices = typeof data === 'object' && data !== null && Array.isArray((data as Record<string, unknown>)['choices']);
-	return hasChoices ? line : null;
-}
-
 // Hash an API key into a stable, opaque token. Workers exposes MD5 through Web Crypto.
 async function md5Hex(input: string): Promise<string> {
 	const digest = await crypto.subtle.digest('MD5', new TextEncoder().encode(input));
@@ -53,12 +40,13 @@ async function md5Hex(input: string): Promise<string> {
 }
 
 // Require an API key on every proxied request, stashing it for downstream session affinity.
+// Accept OpenAI-style `Authorization: Bearer` and Anthropic-style `x-api-key`.
 const requireApiKey = createMiddleware<{ Bindings: Env; Variables: Variables }>(async (c, next) => {
-	const auth = c.req.header('Authorization');
-	if (!auth) {
+	const key = c.req.header('Authorization')?.replace(/^Bearer\s+/i, '') ?? c.req.header('x-api-key');
+	if (!key) {
 		return c.text('API key is required\n', 401);
 	}
-	c.set('apiKey', auth.replace(/^Bearer\s+/i, ''));
+	c.set('apiKey', key);
 	return next();
 });
 
@@ -79,12 +67,10 @@ app.post('/run/:model{.+}', async (c) => {
 	return c.env.AI.run(model, inputs, await runOptions(c));
 });
 
-// OpenAI-compatible chat completions: POST /v1/chat/completions with `model` in the body.
-app.post('/v1/chat/completions', async (c) => {
-	const { model, messages, reasoning_effort, ...payload } = await c.req.json<ChatBody>();
-	if (!model) {
-		return c.text('model is required\n', 400);
-	}
+// Build the Workers AI request body from an OpenAI-compatible chat request, applying our defaults.
+function buildInputs(body: ChatBody): { modelId: keyof AiModels; inputs: CustomInputs } {
+	const { model, messages, reasoning_effort, ...payload } = body;
+	if (!model) throw new HTTPException(400, { message: 'model is required\n' });
 
 	const modelId = (model.startsWith('@') ? model : `@cf/${model}`) as keyof AiModels;
 
@@ -100,14 +86,50 @@ app.post('/v1/chat/completions', async (c) => {
 		chat_template_kwargs: { thinking, enable_thinking: thinking, preserve_thinking: true, clear_thinking: false },
 	};
 
-	// The typed `run` overloads can't model an arbitrary forwarded body; widen to hit the raw-response overload.
+	return { modelId, inputs };
+}
+
+// Drop the choice-less usage trailer Workers AI tacks onto its OpenAI stream — it breaks strict
+// OpenAI clients and crashes the Anthropic converter (which dereferences `choices[0]`).
+async function* withChoices(chunks: AsyncIterable<OpenAIStreamChunk>): AsyncGenerator<OpenAIStreamChunk> {
+	for await (const chunk of chunks) {
+		if (Array.isArray(chunk.choices)) yield chunk;
+	}
+}
+
+// OpenAI-compatible chat completions: POST /v1/chat/completions with `model` in the body. Workers AI
+// already speaks OpenAI, so non-streaming responses pass straight through; a stream is decoded once,
+// the trailer dropped, and re-emitted as OpenAI SSE.
+app.post('/v1/chat/completions', async (c) => {
+	const body = await c.req.json<ChatBody>();
+	const { modelId, inputs } = buildInputs(body);
 	const res = await c.env.AI.run(modelId, inputs as Record<string, unknown>, await runOptions(c));
+	if (!body.stream || !res.ok || !res.body) return res;
 
-	if (!payload.stream || !res.body) return res;
+	const chunks = withChoices(parseSseData<OpenAIStreamChunk>(res.body as ReadableStream<Uint8Array>));
+	const out = sseFromItems(chunks, (chunk) => `data: ${JSON.stringify(chunk)}\n\n`, 'data: [DONE]\n\n');
+	return new Response(out, { headers: { 'content-type': 'text/event-stream' } });
+});
 
-	// Re-emit the SSE stream one line at a time, dropping choice-less chunks.
-	const body = transformLines(res.body as ReadableStream<Uint8Array>, filterChunk);
-	return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
+// Anthropic-compatible messages: POST /v1/messages. Convert the request to OpenAI form, run it, then
+// convert the OpenAI response to Anthropic form — a single one-way translation in each direction.
+app.post('/v1/messages', async (c) => {
+	const antReq = await c.req.json<MessageCreateParams>();
+	const oaiReq = antReqToOaiReq(antReq);
+	// oai2ant emits the OpenAI SDK's request shape, structurally the same OpenAI-compatible body
+	// Workers AI accepts; the only divergence is nullable message content, harmless here.
+	const { modelId, inputs } = buildInputs(oaiReq as unknown as ChatBody);
+	const res = await c.env.AI.run(modelId, inputs as Record<string, unknown>, await runOptions(c));
+	if (!res.ok || !res.body) return res; // pass upstream errors through unchanged
+
+	if (oaiReq.stream) {
+		const events = oaiStreamToAntStream(withChoices(parseSseData<OpenAIStreamChunk>(res.body as ReadableStream<Uint8Array>)));
+		const out = sseFromItems(events, (event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+		return new Response(out, { headers: { 'content-type': 'text/event-stream' } });
+	}
+
+	const oaiRes = await res.json<OpenAIResponse>();
+	return c.json(oaiResToAntRes(oaiRes));
 });
 
 export default app;
