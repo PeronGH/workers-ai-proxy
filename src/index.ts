@@ -10,15 +10,20 @@ import { parseSseData, sseFromItems } from './stream';
 
 type Variables = { apiKey: string };
 
-// Different model chat templates read different thinking flags, so extend Workers AI's typed
-// kwargs (enable_thinking/clear_thinking) with the thinking/preserve_thinking knobs and set both.
-type CustomInputs = Omit<ChatCompletionsInput, 'chat_template_kwargs'> & {
-	chat_template_kwargs: ChatTemplateKwargs & { thinking: boolean; preserve_thinking: boolean };
-};
-
 // OpenAI clients may send reasoning_effort: "none"; the Workers type only allows low/medium/high.
 type ChatBody = Omit<ChatCompletionsMessagesInput, 'reasoning_effort'> & {
 	reasoning_effort?: ChatCompletionsMessagesInput['reasoning_effort'] | 'none';
+};
+
+// Different model chat templates read different thinking flags, so extend Workers AI's typed
+// kwargs (enable_thinking/clear_thinking) with the thinking/preserve_thinking knobs and set both.
+// Built on ChatBody so a passed-through reasoning_effort of "none" stays in the type.
+type CustomInputs = Omit<ChatBody, 'chat_template_kwargs'> & {
+	chat_template_kwargs: ChatTemplateKwargs & {
+		thinking: boolean;
+		preserve_thinking: boolean;
+		reasoning_effort?: ChatBody['reasoning_effort'];
+	};
 };
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -69,13 +74,13 @@ app.post('/run/:model{.+}', async (c) => {
 
 // Build the Workers AI request body from an OpenAI-compatible chat request, applying our defaults.
 function buildInputs(body: ChatBody): { modelId: keyof AiModels; inputs: CustomInputs } {
-	const { model, messages, reasoning_effort, ...payload } = body;
+	const { model, messages, ...payload } = body;
 	if (!model) throw new HTTPException(400, { message: 'model is required\n' });
 
 	const modelId = (model.startsWith('@') ? model : `@cf/${model}`) as keyof AiModels;
 
 	// Thinking is on by default; only an explicit reasoning_effort of "none" disables it.
-	const thinking = reasoning_effort !== 'none';
+	const thinking = payload.reasoning_effort !== 'none';
 	const inputs: CustomInputs = {
 		...payload,
 		temperature: payload.temperature ?? (thinking ? 1 : 0.7),
@@ -83,7 +88,13 @@ function buildInputs(body: ChatBody): { modelId: keyof AiModels; inputs: CustomI
 		// Models on Workers AI generally don't support the OpenAI "developer" role.
 		messages: messages.map((m) => (m.role === 'developer' ? { ...m, role: 'system' } : m)),
 		// preserve_thinking/clear_thinking are inverse: preserving reasoning context means not clearing it.
-		chat_template_kwargs: { thinking, enable_thinking: thinking, preserve_thinking: true, clear_thinking: false },
+		chat_template_kwargs: {
+			thinking,
+			enable_thinking: thinking,
+			preserve_thinking: true,
+			clear_thinking: false,
+			reasoning_effort: payload.reasoning_effort,
+		},
 	};
 
 	return { modelId, inputs };
