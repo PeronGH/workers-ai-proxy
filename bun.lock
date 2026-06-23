@@ -5,7 +5,7 @@
     "": {
       "name": "workers-ai-proxy",
       "dependencies": {
-        "@peron_js/oai2ant": "^0.1.0",
+        "@peron_js/oai2ant": "^0.1.1",
         "hono": "^4.12.25",
       },
       "devDependencies": {
@@ -177,7 +177,7 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.9", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.0.3", "@jridgewell/sourcemap-codec": "^1.4.10" } }, "sha512-3Belt6tdc8bPgAtbcmdtNJlirVoTmEb5e2gC94PnkwEW9jI6CAHUeoG85tjWP5WquqfavoMtMwiG4P926ZKKuQ=="],
 
-    "@peron_js/oai2ant": ["@peron_js/oai2ant@0.1.0", "", { "peerDependencies": { "@anthropic-ai/sdk": "^0.105.0", "openai": "^6.44.0", "typescript": "^5" } }, "sha512-B+EdJMpWwoDz2HBqe7N3grkhsy1fJAtlTQMPLMm4ynBhkd1x+UsanGxhTM9ZxOHIkkUwlTIEjFlQybTB33p5Vw=="],
+    "@peron_js/oai2ant": ["@peron_js/oai2ant@0.1.1", "", { "peerDependencies": { "@anthropic-ai/sdk": "^0.105.0", "openai": "^6.44.0", "typescript": "^5" } }, "sha512-c6zNiHqfpWU+IM+8z/1gWQIBokHtHp3H2r0WLBeOhfWtL7RTa1AdKDLWUSkpvl7uRcrQF0puWhitvxVYUYaZ9w=="],
 
     "@poppinss/colors": ["@poppinss/colors@4.1.6", "", { "dependencies": { "kleur": "^4.1.5" } }, "sha512-H9xkIdFswbS8n1d6vmRd8+c10t2Qe+rZITbbDHHkQixH5+2x1FDGmi/0K+WgWiqQFKPSlIYB7jlH6Kpfn6Fleg=="],
 
