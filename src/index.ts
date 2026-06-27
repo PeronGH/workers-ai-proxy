@@ -62,25 +62,24 @@ async function runOptions(c: Context<{ Bindings: Env; Variables: Variables }>) {
 	return { returnRawResponse: true, extraHeaders: { 'x-session-affinity': await md5Hex(c.get('apiKey')) } } as const;
 }
 
-// Delay before each retry on 429: retry immediately, then back off. Length sets the retry count.
-const RETRY_DELAYS_MS = [0, 500, 1000];
+// How long to keep retrying a 429 before giving up. Retries fire immediately with no backoff; the
+// Workers clock advances across each AI.run (an I/O call), so this wall-clock budget is honored.
+const RETRY_BUDGET_MS = 2000;
 
-// Run a model with the raw response returned, retrying on 429. The request body is already buffered
-// and the 429 arrives before any stream is read, so re-running is safe; the rejected body is drained
-// to avoid a connection leak.
+// Run a model with the raw response returned, retrying on 429 until the budget elapses. The request
+// body is already buffered and the 429 arrives before any stream is read, so re-running is safe; the
+// rejected body is drained to avoid a connection leak.
 async function runWithRetry(
 	c: Context<{ Bindings: Env; Variables: Variables }>,
 	model: keyof AiModels,
 	inputs: Record<string, unknown>,
 ): Promise<Response> {
 	const options = await runOptions(c);
-	for (let attempt = 0; ; attempt++) {
+	const deadline = Date.now() + RETRY_BUDGET_MS;
+	for (;;) {
 		const res = await c.env.AI.run(model, inputs, options);
-		const delayMs = RETRY_DELAYS_MS[attempt];
-		if (res.status !== 429 || delayMs === undefined) return res;
-
+		if (res.status !== 429 || Date.now() >= deadline) return res;
 		await res.body?.cancel();
-		if (delayMs > 0) await scheduler.wait(delayMs);
 	}
 }
 
