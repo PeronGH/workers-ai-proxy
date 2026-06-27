@@ -64,7 +64,7 @@ async function runOptions(c: Context<{ Bindings: Env; Variables: Variables }>) {
 
 // How long to keep retrying a 429 before giving up. Retries fire immediately with no backoff; the
 // Workers clock advances across each AI.run (an I/O call), so this wall-clock budget is honored.
-const RETRY_BUDGET_MS = 2000;
+const RETRY_BUDGET_MS = 5000;
 
 // Run a model with the raw response returned, retrying on 429 until the budget elapses. The request
 // body is already buffered and the 429 arrives before any stream is read, so re-running is safe; the
