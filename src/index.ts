@@ -62,12 +62,12 @@ async function runOptions(c: Context<{ Bindings: Env; Variables: Variables }>) {
 	return { returnRawResponse: true, extraHeaders: { 'x-session-affinity': await md5Hex(c.get('apiKey')) } } as const;
 }
 
-const MAX_RETRIES = 3;
-const BASE_DELAY_MS = 500;
+// Delay before each retry on 429: retry immediately, then back off. Length sets the retry count.
+const RETRY_DELAYS_MS = [0, 500, 1000];
 
-// Run a model with the raw response returned, retrying on 429 with exponential backoff (honoring an
-// upstream Retry-After when present). The request body is already buffered and the 429 arrives before
-// any stream is read, so re-running is safe; the rejected body is drained to avoid a connection leak.
+// Run a model with the raw response returned, retrying on 429. The request body is already buffered
+// and the 429 arrives before any stream is read, so re-running is safe; the rejected body is drained
+// to avoid a connection leak.
 async function runWithRetry(
 	c: Context<{ Bindings: Env; Variables: Variables }>,
 	model: keyof AiModels,
@@ -76,12 +76,11 @@ async function runWithRetry(
 	const options = await runOptions(c);
 	for (let attempt = 0; ; attempt++) {
 		const res = await c.env.AI.run(model, inputs, options);
-		if (res.status !== 429 || attempt >= MAX_RETRIES) return res;
+		const delayMs = RETRY_DELAYS_MS[attempt];
+		if (res.status !== 429 || delayMs === undefined) return res;
 
-		const retryAfter = Number(res.headers.get('retry-after'));
-		const delayMs = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : BASE_DELAY_MS * 2 ** attempt;
 		await res.body?.cancel();
-		await scheduler.wait(delayMs);
+		if (delayMs > 0) await scheduler.wait(delayMs);
 	}
 }
 
