@@ -62,6 +62,29 @@ async function runOptions(c: Context<{ Bindings: Env; Variables: Variables }>) {
 	return { returnRawResponse: true, extraHeaders: { 'x-session-affinity': await md5Hex(c.get('apiKey')) } } as const;
 }
 
+const MAX_RETRIES = 3;
+const BASE_DELAY_MS = 500;
+
+// Run a model with the raw response returned, retrying on 429 with exponential backoff (honoring an
+// upstream Retry-After when present). The request body is already buffered and the 429 arrives before
+// any stream is read, so re-running is safe; the rejected body is drained to avoid a connection leak.
+async function runWithRetry(
+	c: Context<{ Bindings: Env; Variables: Variables }>,
+	model: keyof AiModels,
+	inputs: Record<string, unknown>,
+): Promise<Response> {
+	const options = await runOptions(c);
+	for (let attempt = 0; ; attempt++) {
+		const res = await c.env.AI.run(model, inputs, options);
+		if (res.status !== 429 || attempt >= MAX_RETRIES) return res;
+
+		const retryAfter = Number(res.headers.get('retry-after'));
+		const delayMs = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : BASE_DELAY_MS * 2 ** attempt;
+		await res.body?.cancel();
+		await scheduler.wait(delayMs);
+	}
+}
+
 app.use('/run/*', requireApiKey);
 app.use('/v1/*', requireApiKey);
 
@@ -69,7 +92,7 @@ app.use('/v1/*', requireApiKey);
 app.post('/run/:model{.+}', async (c) => {
 	const model = c.req.param('model') as keyof AiModels;
 	const inputs = await c.req.json<Record<string, unknown>>();
-	return c.env.AI.run(model, inputs, await runOptions(c));
+	return runWithRetry(c, model, inputs);
 });
 
 // Build the Workers AI request body from an OpenAI-compatible chat request, applying our defaults.
@@ -114,7 +137,7 @@ async function* withChoices(chunks: AsyncIterable<OpenAIStreamChunk>): AsyncGene
 app.post('/v1/chat/completions', async (c) => {
 	const body = await c.req.json<ChatBody>();
 	const { modelId, inputs } = buildInputs(body);
-	const res = await c.env.AI.run(modelId, inputs as Record<string, unknown>, await runOptions(c));
+	const res = await runWithRetry(c, modelId, inputs);
 	if (!body.stream || !res.ok || !res.body) return res;
 
 	const chunks = withChoices(parseSseData<OpenAIStreamChunk>(res.body as ReadableStream<Uint8Array>));
@@ -130,7 +153,7 @@ app.post('/v1/messages', async (c) => {
 	// oai2ant emits the OpenAI SDK's request shape, structurally the same OpenAI-compatible body
 	// Workers AI accepts; the only divergence is nullable message content, harmless here.
 	const { modelId, inputs } = buildInputs(oaiReq as unknown as ChatBody);
-	const res = await c.env.AI.run(modelId, inputs as Record<string, unknown>, await runOptions(c));
+	const res = await runWithRetry(c, modelId, inputs);
 	if (!res.ok || !res.body) return res; // pass upstream errors through unchanged
 
 	if (oaiReq.stream) {
