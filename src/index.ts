@@ -8,11 +8,12 @@ import type { OpenAIResponse, OpenAIStreamChunk } from '@peron_js/oai2ant';
 import type { MessageCreateParams } from '@anthropic-ai/sdk/resources/messages';
 import { parseSseData, sseFromItems } from './stream';
 
-type Variables = { apiKey: string; clientIp: string };
+type Variables = { apiKey: string };
 
 // OpenAI clients may send reasoning_effort: "none"; the Workers type only allows low/medium/high.
 type ChatBody = Omit<ChatCompletionsMessagesInput, 'reasoning_effort'> & {
 	reasoning_effort?: ChatCompletionsMessagesInput['reasoning_effort'] | 'none';
+	prompt_cache_key?: string;
 };
 
 // Different model chat templates read different thinking flags, so extend Workers AI's typed
@@ -38,13 +39,17 @@ app.use(
 	}),
 );
 
-// Hash cache affinity inputs into a stable, opaque token. Workers exposes MD5 through Web Crypto.
+// Hash fallback affinity inputs into a stable, opaque token. Workers exposes MD5 through Web Crypto.
 async function md5Hex(input: string): Promise<string> {
 	const digest = await crypto.subtle.digest('MD5', new TextEncoder().encode(input));
 	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-// Require the stable affinity inputs on every proxied request, stashing them for downstream use.
+function nonEmptyString(value: unknown): string | undefined {
+	return typeof value === 'string' && value ? value : undefined;
+}
+
+// Require an API key on every proxied request, stashing it for downstream session affinity.
 // Accept OpenAI-style `Authorization: Bearer` and Anthropic-style `x-api-key`.
 const requireApiKey = createMiddleware<{ Bindings: Env; Variables: Variables }>(async (c, next) => {
 	const key = c.req.header('Authorization')?.replace(/^Bearer\s+/i, '') ?? c.req.header('x-api-key');
@@ -52,19 +57,16 @@ const requireApiKey = createMiddleware<{ Bindings: Env; Variables: Variables }>(
 		return c.text('API key is required\n', 401);
 	}
 
-	const clientIp = c.req.header('CF-Connecting-IP') ?? '';
-
 	c.set('apiKey', key);
-	c.set('clientIp', clientIp);
 	return next();
 });
 
-// Route same-session requests to the same model instance for prefix-cache hits, keyed by a hash of
-// the API key and client IP so neither raw value leaves in upstream headers.
+// Route same-session requests to the same model instance for prefix-cache hits.
 // https://developers.cloudflare.com/workers-ai/features/prompt-caching/
-async function runOptions(c: Context<{ Bindings: Env; Variables: Variables }>) {
-	const affinityInput = JSON.stringify([c.get('apiKey'), c.get('clientIp')]);
-	return { returnRawResponse: true, extraHeaders: { 'x-session-affinity': await md5Hex(affinityInput) } } as const;
+async function runOptions(c: Context<{ Bindings: Env; Variables: Variables }>, promptCacheKey: string | undefined) {
+	const headerAffinity = nonEmptyString(c.req.header('x-session-affinity'));
+	const fallbackAffinity = await md5Hex(JSON.stringify([c.get('apiKey'), c.req.header('CF-Connecting-IP') ?? '']));
+	return { returnRawResponse: true, extraHeaders: { 'x-session-affinity': promptCacheKey ?? headerAffinity ?? fallbackAffinity } } as const;
 }
 
 // How long to keep retrying a 429 before giving up.
@@ -80,10 +82,11 @@ async function runWithRetry(
 	model: keyof AiModels,
 	inputs: Record<string, unknown>,
 ): Promise<Response> {
-	const options = await runOptions(c);
+	const { prompt_cache_key, ...runInputs } = inputs;
+	const options = await runOptions(c, nonEmptyString(prompt_cache_key));
 	const deadline = Date.now() + RETRY_BUDGET_MS;
 	for (;;) {
-		const res = await c.env.AI.run(model, inputs, options);
+		const res = await c.env.AI.run(model, runInputs, options);
 		if (res.status !== 429) return res;
 
 		const retryAfter = Number.parseInt(res.headers.get('retry-after') ?? '', 10);
