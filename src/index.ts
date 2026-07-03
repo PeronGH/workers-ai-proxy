@@ -27,6 +27,8 @@ type CustomInputs = Omit<ChatBody, 'chat_template_kwargs'> & {
 	};
 };
 
+type RunInputs = Record<string, unknown> & { prompt_cache_key?: string };
+
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 app.use(
@@ -45,10 +47,6 @@ async function md5Hex(input: string): Promise<string> {
 	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-function nonEmptyString(value: unknown): string | undefined {
-	return typeof value === 'string' && value ? value : undefined;
-}
-
 // Require an API key on every proxied request, stashing it for downstream session affinity.
 // Accept OpenAI-style `Authorization: Bearer` and Anthropic-style `x-api-key`.
 const requireApiKey = createMiddleware<{ Bindings: Env; Variables: Variables }>(async (c, next) => {
@@ -64,7 +62,7 @@ const requireApiKey = createMiddleware<{ Bindings: Env; Variables: Variables }>(
 // Route same-session requests to the same model instance for prefix-cache hits.
 // https://developers.cloudflare.com/workers-ai/features/prompt-caching/
 async function runOptions(c: Context<{ Bindings: Env; Variables: Variables }>, promptCacheKey: string | undefined) {
-	const headerAffinity = nonEmptyString(c.req.header('x-session-affinity'));
+	const headerAffinity = c.req.header('x-session-affinity');
 	const affinityInput = promptCacheKey ?? headerAffinity ?? JSON.stringify([c.get('apiKey'), c.req.header('CF-Connecting-IP') ?? '']);
 	return { returnRawResponse: true, extraHeaders: { 'x-session-affinity': await md5Hex(affinityInput) } } as const;
 }
@@ -80,10 +78,10 @@ const RETRY_BUDGET_MS = 30000;
 async function runWithRetry(
 	c: Context<{ Bindings: Env; Variables: Variables }>,
 	model: keyof AiModels,
-	inputs: Record<string, unknown>,
+	inputs: RunInputs,
 ): Promise<Response> {
 	const { prompt_cache_key, ...runInputs } = inputs;
-	const options = await runOptions(c, nonEmptyString(prompt_cache_key));
+	const options = await runOptions(c, prompt_cache_key);
 	const deadline = Date.now() + RETRY_BUDGET_MS;
 	for (;;) {
 		const res = await c.env.AI.run(model, runInputs, options);
