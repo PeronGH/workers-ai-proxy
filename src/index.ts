@@ -8,7 +8,7 @@ import type { OpenAIResponse, OpenAIStreamChunk } from '@peron_js/oai2ant';
 import type { MessageCreateParams } from '@anthropic-ai/sdk/resources/messages';
 import { parseSseData, sseFromItems } from './stream';
 
-type Variables = { apiKey: string };
+type Variables = { apiKey: string; clientIp: string };
 
 // OpenAI clients may send reasoning_effort: "none"; the Workers type only allows low/medium/high.
 type ChatBody = Omit<ChatCompletionsMessagesInput, 'reasoning_effort'> & {
@@ -38,28 +38,33 @@ app.use(
 	}),
 );
 
-// Hash an API key into a stable, opaque token. Workers exposes MD5 through Web Crypto.
+// Hash cache affinity inputs into a stable, opaque token. Workers exposes MD5 through Web Crypto.
 async function md5Hex(input: string): Promise<string> {
 	const digest = await crypto.subtle.digest('MD5', new TextEncoder().encode(input));
 	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-// Require an API key on every proxied request, stashing it for downstream session affinity.
+// Require the stable affinity inputs on every proxied request, stashing them for downstream use.
 // Accept OpenAI-style `Authorization: Bearer` and Anthropic-style `x-api-key`.
 const requireApiKey = createMiddleware<{ Bindings: Env; Variables: Variables }>(async (c, next) => {
 	const key = c.req.header('Authorization')?.replace(/^Bearer\s+/i, '') ?? c.req.header('x-api-key');
 	if (!key) {
 		return c.text('API key is required\n', 401);
 	}
+
+	const clientIp = c.req.header('CF-Connecting-IP') ?? '';
+
 	c.set('apiKey', key);
+	c.set('clientIp', clientIp);
 	return next();
 });
 
 // Route same-session requests to the same model instance for prefix-cache hits, keyed by a hash of
-// the API key so the raw key never leaves in upstream headers.
+// the API key and client IP so neither raw value leaves in upstream headers.
 // https://developers.cloudflare.com/workers-ai/features/prompt-caching/
 async function runOptions(c: Context<{ Bindings: Env; Variables: Variables }>) {
-	return { returnRawResponse: true, extraHeaders: { 'x-session-affinity': await md5Hex(c.get('apiKey')) } } as const;
+	const affinityInput = JSON.stringify([c.get('apiKey'), c.get('clientIp')]);
+	return { returnRawResponse: true, extraHeaders: { 'x-session-affinity': await md5Hex(affinityInput) } } as const;
 }
 
 // How long to keep retrying a 429 before giving up.
