@@ -63,7 +63,7 @@ async function runOptions(c: Context<{ Bindings: Env; Variables: Variables }>) {
 }
 
 // How long to keep retrying a 429 before giving up.
-const RETRY_BUDGET_MS = 5000;
+const RETRY_BUDGET_MS = 30000;
 
 // Run a model with the raw response returned, retrying on 429 until the budget elapses. Retries fire
 // immediately unless the upstream sends a Retry-After (seconds), which we honor — but only if the wait
