@@ -39,7 +39,7 @@ app.use(
 	}),
 );
 
-// Hash fallback affinity inputs into a stable, opaque token. Workers exposes MD5 through Web Crypto.
+// Hash cache affinity inputs into a stable, opaque token. Workers exposes MD5 through Web Crypto.
 async function md5Hex(input: string): Promise<string> {
 	const digest = await crypto.subtle.digest('MD5', new TextEncoder().encode(input));
 	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -65,8 +65,8 @@ const requireApiKey = createMiddleware<{ Bindings: Env; Variables: Variables }>(
 // https://developers.cloudflare.com/workers-ai/features/prompt-caching/
 async function runOptions(c: Context<{ Bindings: Env; Variables: Variables }>, promptCacheKey: string | undefined) {
 	const headerAffinity = nonEmptyString(c.req.header('x-session-affinity'));
-	const fallbackAffinity = await md5Hex(JSON.stringify([c.get('apiKey'), c.req.header('CF-Connecting-IP') ?? '']));
-	return { returnRawResponse: true, extraHeaders: { 'x-session-affinity': promptCacheKey ?? headerAffinity ?? fallbackAffinity } } as const;
+	const affinityInput = promptCacheKey ?? headerAffinity ?? JSON.stringify([c.get('apiKey'), c.req.header('CF-Connecting-IP') ?? '']);
+	return { returnRawResponse: true, extraHeaders: { 'x-session-affinity': await md5Hex(affinityInput) } } as const;
 }
 
 // How long to keep retrying a 429 before giving up.
