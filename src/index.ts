@@ -67,32 +67,28 @@ async function runOptions(c: Context<{ Bindings: Env; Variables: Variables }>, p
 	return { returnRawResponse: true, extraHeaders: { 'x-session-affinity': await md5Hex(affinityInput) } } as const;
 }
 
-// How long to keep retrying a 429 before giving up.
-const RETRY_BUDGET_MS = 30000;
-
-// Run a model with the raw response returned, retrying on 429 until the budget elapses. Retries fire
-// immediately unless the upstream sends a Retry-After (seconds), which we honor — but only if the wait
-// fits within the remaining budget, otherwise we give the 429 back rather than overshoot the deadline.
-// The request body is already buffered and the 429 arrives before any stream is read, so re-running is
-// safe; the rejected body is drained to avoid a connection leak.
+// Run a model with the raw response returned, retrying on 429 until the client aborts the request.
+// Retries fire immediately unless the upstream sends a Retry-After (seconds), which we honor. The
+// request's abort signal is threaded into both the run and the wait, so a client disconnect cancels
+// the in-flight run and breaks the loop. The request body is already buffered and the 429 arrives
+// before any stream is read, so re-running is safe; the rejected body is drained to avoid a leak.
 async function runWithRetry(
 	c: Context<{ Bindings: Env; Variables: Variables }>,
 	model: keyof AiModels,
 	inputs: RunInputs,
 ): Promise<Response> {
 	const { prompt_cache_key, ...runInputs } = inputs;
-	const options = await runOptions(c, prompt_cache_key);
-	const deadline = Date.now() + RETRY_BUDGET_MS;
+	const { signal } = c.req.raw;
+	const options = { ...(await runOptions(c, prompt_cache_key)), signal };
 	for (;;) {
 		const res = await c.env.AI.run(model, runInputs, options);
 		if (res.status !== 429) return res;
 
 		const retryAfter = Number.parseInt(res.headers.get('retry-after') ?? '', 10);
 		const waitMs = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 0;
-		if (waitMs >= deadline - Date.now()) return res;
 
 		await res.body?.cancel();
-		if (waitMs > 0) await scheduler.wait(waitMs);
+		if (waitMs > 0) await scheduler.wait(waitMs, { signal });
 	}
 }
 
