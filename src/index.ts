@@ -107,7 +107,7 @@ function buildInputs(body: ChatBody): { modelId: keyof AiModels; inputs: CustomI
 	const { model, messages, ...payload } = body;
 	if (!model) throw new HTTPException(400, { message: 'model is required\n' });
 
-	const modelId = (model.startsWith('@') ? model : `@cf/${model}`) as keyof AiModels;
+	const modelId = model as keyof AiModels;
 
 	// Thinking is on by default; only an explicit reasoning_effort of "none" disables it.
 	const thinking = payload.reasoning_effort !== 'none';
