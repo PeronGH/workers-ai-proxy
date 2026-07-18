@@ -41,6 +41,13 @@ app.use(
 	}),
 );
 
+// Every proxy-generated error is a JSON body. Clients are trusted, so unhandled errors carry
+// their message and stack instead of an opaque "Internal Server Error".
+app.onError((err, c) => {
+	if (err instanceof HTTPException) return c.json({ error: { message: err.message } }, err.status);
+	return c.json({ error: { message: err.message, stack: err.stack } }, 500);
+});
+
 // Hash cache affinity inputs into a stable, opaque token. Workers exposes MD5 through Web Crypto.
 async function md5Hex(input: string): Promise<string> {
 	const digest = await crypto.subtle.digest('MD5', new TextEncoder().encode(input));
@@ -52,7 +59,7 @@ async function md5Hex(input: string): Promise<string> {
 const requireApiKey = createMiddleware<{ Bindings: Env; Variables: Variables }>(async (c, next) => {
 	const key = c.req.header('Authorization')?.replace(/^Bearer\s+/i, '') ?? c.req.header('x-api-key');
 	if (!key) {
-		return c.text('API key is required\n', 401);
+		throw new HTTPException(401, { message: 'API key is required' });
 	}
 
 	c.set('apiKey', key);
@@ -105,7 +112,7 @@ app.post('/run/:model{.+}', async (c) => {
 // Build the Workers AI request body from an OpenAI-compatible chat request, applying our defaults.
 function buildInputs(body: ChatBody): { modelId: keyof AiModels; inputs: CustomInputs } {
 	const { model, messages, ...payload } = body;
-	if (!model) throw new HTTPException(400, { message: 'model is required\n' });
+	if (!model) throw new HTTPException(400, { message: 'model is required' });
 
 	const modelId = model as keyof AiModels;
 
