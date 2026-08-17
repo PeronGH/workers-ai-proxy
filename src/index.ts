@@ -17,12 +17,13 @@ type ChatBody = Omit<ChatCompletionsMessagesInput, 'reasoning_effort'> & {
 };
 
 // Different model chat templates read different thinking flags, so extend Workers AI's typed
-// kwargs (enable_thinking/clear_thinking) with the thinking/preserve_thinking knobs and set both.
-// Built on ChatBody so a passed-through reasoning_effort of "none" stays in the type.
+// kwargs (enable_thinking/clear_thinking) with the thinking/preserve_thinking/drop_thinking knobs
+// and set them all. Built on ChatBody so a passed-through reasoning_effort of "none" stays in the type.
 type CustomInputs = Omit<ChatBody, 'chat_template_kwargs'> & {
 	chat_template_kwargs: ChatTemplateKwargs & {
 		thinking: boolean;
 		preserve_thinking: boolean;
+		drop_thinking: boolean;
 		reasoning_effort?: ChatBody['reasoning_effort'];
 	};
 };
@@ -124,12 +125,14 @@ function buildInputs(body: ChatBody): { modelId: keyof AiModels; inputs: CustomI
 		top_p: payload.top_p ?? 0.95,
 		// Models on Workers AI generally don't support the OpenAI "developer" role.
 		messages: messages.map((m) => (m.role === 'developer' ? { ...m, role: 'system' } : m)),
-		// preserve_thinking/clear_thinking are inverse: preserving reasoning context means not clearing it.
+		// preserve_thinking is the inverse of clear_thinking/drop_thinking: preserving reasoning
+		// context means not clearing or dropping it.
 		chat_template_kwargs: {
 			thinking,
 			enable_thinking: thinking,
 			preserve_thinking: true,
 			clear_thinking: false,
+			drop_thinking: false,
 			reasoning_effort: payload.reasoning_effort,
 		},
 	};
