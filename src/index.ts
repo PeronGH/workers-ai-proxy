@@ -140,24 +140,26 @@ function buildInputs(body: ChatBody): { modelId: keyof AiModels; inputs: CustomI
 	return { modelId, inputs };
 }
 
-// Drop the choice-less usage trailer Workers AI tacks onto its OpenAI stream — it breaks strict
-// OpenAI clients and crashes the Anthropic converter (which dereferences `choices[0]`).
-async function* withChoices(chunks: AsyncIterable<OpenAIStreamChunk>): AsyncGenerator<OpenAIStreamChunk> {
+// Workers AI tacks a choice-less usage trailer onto the end of its OpenAI stream. Normalize it to
+// OpenAI's canonical `stream_options.include_usage` shape — `choices: []` plus usage — so strict
+// clients accept it and the Anthropic converter (which dereferences `choices[0]`) survives it
+// while still capturing the token counts.
+async function* withUsage(chunks: AsyncIterable<OpenAIStreamChunk>): AsyncGenerator<OpenAIStreamChunk> {
 	for await (const chunk of chunks) {
-		if (Array.isArray(chunk.choices)) yield chunk;
+		yield Array.isArray(chunk.choices) ? chunk : { ...chunk, choices: [] };
 	}
 }
 
 // OpenAI-compatible chat completions: POST /v1/chat/completions with `model` in the body. Workers AI
 // already speaks OpenAI, so non-streaming responses pass straight through; a stream is decoded once,
-// the trailer dropped, and re-emitted as OpenAI SSE.
+// the usage trailer normalized, and re-emitted as OpenAI SSE.
 app.post('/v1/chat/completions', async (c) => {
 	const body = await c.req.json<ChatBody>();
 	const { modelId, inputs } = buildInputs(body);
 	const res = await runWithRetry(c, modelId, inputs);
 	if (!body.stream || !res.ok || !res.body) return res;
 
-	const chunks = withChoices(parseSseData<OpenAIStreamChunk>(res.body as ReadableStream<Uint8Array>));
+	const chunks = withUsage(parseSseData<OpenAIStreamChunk>(res.body as ReadableStream<Uint8Array>));
 	const out = sseFromItems(chunks, (chunk) => `data: ${JSON.stringify(chunk)}\n\n`, 'data: [DONE]\n\n');
 	return new Response(out, { headers: { 'content-type': 'text/event-stream' } });
 });
@@ -174,7 +176,7 @@ app.post('/v1/messages', async (c) => {
 	if (!res.ok || !res.body) return res; // pass upstream errors through unchanged
 
 	if (oaiReq.stream) {
-		const events = oaiStreamToAntStream(withChoices(parseSseData<OpenAIStreamChunk>(res.body as ReadableStream<Uint8Array>)));
+		const events = oaiStreamToAntStream(withUsage(parseSseData<OpenAIStreamChunk>(res.body as ReadableStream<Uint8Array>)));
 		const out = sseFromItems(events, (event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
 		return new Response(out, { headers: { 'content-type': 'text/event-stream' } });
 	}
