@@ -119,7 +119,7 @@ function buildInputs(body: ChatBody): { modelId: keyof AiModels; inputs: CustomI
 	const thinking = payload.reasoning_effort !== 'none';
 	const inputs: CustomInputs = {
 		...payload,
-		temperature: payload.temperature ?? (thinking ? 1 : 0.7),
+		temperature: payload.temperature ?? (thinking ? 1 : 0.6),
 		top_p: payload.top_p ?? 0.95,
 		// Models on Workers AI generally don't support the OpenAI "developer" role.
 		messages: messages.map((m) => (m.role === 'developer' ? { ...m, role: 'system' } : m)),
