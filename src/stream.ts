@@ -26,28 +26,20 @@ export async function* parseSseData<T>(body: ReadableStream<Uint8Array>): AsyncG
 }
 
 /**
- * Serialize an async stream of JSON values as an SSE byte stream. Each item is rendered into a frame
- * by `format` (return `null` to drop it); `trailer`, if given, is emitted once after the last item
- * (e.g. the OpenAI `data: [DONE]` sentinel).
+ * Serialize an async stream of JSON values as an SSE byte stream, rendering each item into a frame
+ * with `format`.
  */
-export function sseFromItems<T>(items: AsyncIterable<T>, format: (item: T) => string | null, trailer?: string): ReadableStream<Uint8Array> {
+export function sseFromItems<T>(items: AsyncIterable<T>, format: (item: T) => string): ReadableStream<Uint8Array> {
 	const encoder = new TextEncoder();
 	const iterator = items[Symbol.asyncIterator]();
 	return new ReadableStream<Uint8Array>({
 		async pull(controller) {
-			while (true) {
-				const result = await iterator.next();
-				if (result.done) {
-					if (trailer !== undefined) controller.enqueue(encoder.encode(trailer));
-					controller.close();
-					return;
-				}
-				const frame = format(result.value);
-				if (frame !== null) {
-					controller.enqueue(encoder.encode(frame));
-					return;
-				}
+			const result = await iterator.next();
+			if (result.done) {
+				controller.close();
+				return;
 			}
+			controller.enqueue(encoder.encode(format(result.value)));
 		},
 		cancel(reason) {
 			void iterator.return?.(reason);

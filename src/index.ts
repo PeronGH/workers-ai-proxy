@@ -30,6 +30,10 @@ type CustomInputs = Omit<ChatBody, 'chat_template_kwargs'> & {
 
 type RunInputs = Record<string, unknown> & { prompt_cache_key?: string };
 
+// Every run goes through this AI Gateway, which owns retries, caching, and rate limiting.
+// https://developers.cloudflare.com/ai-gateway/integrations/aig-workers-ai-binding/
+const GATEWAY_ID = 'proxy';
+
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 app.use(
@@ -67,37 +71,20 @@ const requireApiKey = createMiddleware<{ Bindings: Env; Variables: Variables }>(
 	return next();
 });
 
-// Route same-session requests to the same model instance for prefix-cache hits.
-// https://developers.cloudflare.com/workers-ai/features/prompt-caching/
-async function runOptions(c: Context<{ Bindings: Env; Variables: Variables }>, promptCacheKey: string | undefined) {
-	const headerAffinity = c.req.header('x-session-affinity');
-	const affinityInput = promptCacheKey ?? headerAffinity ?? JSON.stringify([c.get('apiKey'), c.req.header('CF-Connecting-IP') ?? '']);
-	return { returnRawResponse: true, extraHeaders: { 'x-session-affinity': await md5Hex(affinityInput) } } as const;
-}
-
-// Run a model with the raw response returned, retrying on 429 until the client aborts the request.
-// Retries fire immediately unless the upstream sends a Retry-After (seconds), which we honor. The
-// request's abort signal is threaded into both the run and the wait, so a client disconnect cancels
-// the in-flight run and breaks the loop. The request body is already buffered and the 429 arrives
-// before any stream is read, so re-running is safe; the rejected body is drained to avoid a leak.
-async function runWithRetry(
-	c: Context<{ Bindings: Env; Variables: Variables }>,
-	model: keyof AiModels,
-	inputs: RunInputs,
-): Promise<Response> {
+// Run a model through the gateway with the raw response returned; upstream failures, including 429,
+// pass straight back to the client. The request's abort signal is threaded in so a client disconnect
+// cancels the in-flight run. Session affinity routes same-session requests to the same model instance
+// for prefix-cache hits. https://developers.cloudflare.com/workers-ai/features/prompt-caching/
+async function run(c: Context<{ Bindings: Env; Variables: Variables }>, model: keyof AiModels, inputs: RunInputs): Promise<Response> {
 	const { prompt_cache_key, ...runInputs } = inputs;
-	const { signal } = c.req.raw;
-	const options = { ...(await runOptions(c, prompt_cache_key)), signal };
-	for (;;) {
-		const res = await c.env.AI.run(model, runInputs, options);
-		if (res.status !== 429) return res;
-
-		const retryAfter = Number.parseInt(res.headers.get('retry-after') ?? '', 10);
-		const waitMs = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 0;
-
-		await res.body?.cancel();
-		if (waitMs > 0) await scheduler.wait(waitMs, { signal });
-	}
+	const affinityInput =
+		prompt_cache_key ?? c.req.header('x-session-affinity') ?? JSON.stringify([c.get('apiKey'), c.req.header('CF-Connecting-IP') ?? '']);
+	return c.env.AI.run(model, runInputs, {
+		returnRawResponse: true,
+		gateway: { id: GATEWAY_ID },
+		extraHeaders: { 'x-session-affinity': await md5Hex(affinityInput) },
+		signal: c.req.raw.signal,
+	});
 }
 
 app.use('/run/*', requireApiKey);
@@ -107,7 +94,7 @@ app.use('/v1/*', requireApiKey);
 app.post('/run/:model{.+}', async (c) => {
 	const model = c.req.param('model') as keyof AiModels;
 	const inputs = await c.req.json<Record<string, unknown>>();
-	return runWithRetry(c, model, inputs);
+	return run(c, model, inputs);
 });
 
 // Build the Workers AI request body from an OpenAI-compatible chat request, applying our defaults.
@@ -140,28 +127,12 @@ function buildInputs(body: ChatBody): { modelId: keyof AiModels; inputs: CustomI
 	return { modelId, inputs };
 }
 
-// Workers AI tacks a choice-less usage trailer onto the end of its OpenAI stream. Normalize it to
-// OpenAI's canonical `stream_options.include_usage` shape — `choices: []` plus usage — so strict
-// clients accept it and the Anthropic converter (which dereferences `choices[0]`) survives it
-// while still capturing the token counts.
-async function* withUsage(chunks: AsyncIterable<OpenAIStreamChunk>): AsyncGenerator<OpenAIStreamChunk> {
-	for await (const chunk of chunks) {
-		yield Array.isArray(chunk.choices) ? chunk : { ...chunk, choices: [] };
-	}
-}
-
 // OpenAI-compatible chat completions: POST /v1/chat/completions with `model` in the body. Workers AI
-// already speaks OpenAI, so non-streaming responses pass straight through; a stream is decoded once,
-// the usage trailer normalized, and re-emitted as OpenAI SSE.
+// already speaks OpenAI, so the response — streaming or not — passes straight through.
 app.post('/v1/chat/completions', async (c) => {
 	const body = await c.req.json<ChatBody>();
 	const { modelId, inputs } = buildInputs(body);
-	const res = await runWithRetry(c, modelId, inputs);
-	if (!body.stream || !res.ok || !res.body) return res;
-
-	const chunks = withUsage(parseSseData<OpenAIStreamChunk>(res.body as ReadableStream<Uint8Array>));
-	const out = sseFromItems(chunks, (chunk) => `data: ${JSON.stringify(chunk)}\n\n`, 'data: [DONE]\n\n');
-	return new Response(out, { headers: { 'content-type': 'text/event-stream' } });
+	return run(c, modelId, inputs);
 });
 
 // Anthropic-compatible messages: POST /v1/messages. Convert the request to OpenAI form, run it, then
@@ -172,11 +143,11 @@ app.post('/v1/messages', async (c) => {
 	// oai2ant emits the OpenAI SDK's request shape, structurally the same OpenAI-compatible body
 	// Workers AI accepts; the only divergence is nullable message content, harmless here.
 	const { modelId, inputs } = buildInputs(oaiReq as unknown as ChatBody);
-	const res = await runWithRetry(c, modelId, inputs);
+	const res = await run(c, modelId, inputs);
 	if (!res.ok || !res.body) return res; // pass upstream errors through unchanged
 
 	if (oaiReq.stream) {
-		const events = oaiStreamToAntStream(withUsage(parseSseData<OpenAIStreamChunk>(res.body as ReadableStream<Uint8Array>)));
+		const events = oaiStreamToAntStream(parseSseData<OpenAIStreamChunk>(res.body as ReadableStream<Uint8Array>));
 		const out = sseFromItems(events, (event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
 		return new Response(out, { headers: { 'content-type': 'text/event-stream' } });
 	}
