@@ -30,9 +30,20 @@ type CustomInputs = Omit<ChatBody, 'chat_template_kwargs'> & {
 
 type RunInputs = Record<string, unknown> & { prompt_cache_key?: string };
 
-// Every run goes through this AI Gateway, which owns retries, caching, and rate limiting.
+// Every run goes through this AI Gateway, which owns retries. Retry as hard as the gateway permits
+// — 5 attempts is its ceiling and 100ms its delay floor — and keep no response cache or logs.
 // https://developers.cloudflare.com/ai-gateway/integrations/aig-workers-ai-binding/
-const GATEWAY_ID = 'proxy';
+const GATEWAY: GatewayOptions = {
+	id: 'proxy',
+	retries: { maxAttempts: 5, retryDelayMs: 100, backoff: 'exponential' },
+	skipCache: true,
+	collectLog: false,
+};
+
+// Zero data retention has no typed gateway option, so it rides along as the header the gateway
+// options compile down to. It only binds unified-billing third-party providers, not @cf models.
+// https://developers.cloudflare.com/ai-gateway/features/unified-billing/
+const ZDR_HEADER = { 'cf-aig-zdr': 'true' } as const;
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -81,8 +92,8 @@ async function run(c: Context<{ Bindings: Env; Variables: Variables }>, model: k
 		prompt_cache_key ?? c.req.header('x-session-affinity') ?? JSON.stringify([c.get('apiKey'), c.req.header('CF-Connecting-IP') ?? '']);
 	return c.env.AI.run(model, runInputs, {
 		returnRawResponse: true,
-		gateway: { id: GATEWAY_ID },
-		extraHeaders: { 'x-session-affinity': await md5Hex(affinityInput) },
+		gateway: GATEWAY,
+		extraHeaders: { ...ZDR_HEADER, 'x-session-affinity': await md5Hex(affinityInput) },
 		signal: c.req.raw.signal,
 	});
 }
