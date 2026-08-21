@@ -40,11 +40,6 @@ const GATEWAY: GatewayOptions = {
 	collectLog: false,
 };
 
-// Zero data retention has no typed gateway option, so it rides along as the header the gateway
-// options compile down to. It only binds unified-billing third-party providers, not @cf models.
-// https://developers.cloudflare.com/ai-gateway/features/unified-billing/
-const ZDR_HEADER = { 'cf-aig-zdr': 'true' } as const;
-
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 app.use(
@@ -93,7 +88,7 @@ async function run(c: Context<{ Bindings: Env; Variables: Variables }>, model: k
 	return c.env.AI.run(model, runInputs, {
 		returnRawResponse: true,
 		gateway: GATEWAY,
-		extraHeaders: { ...ZDR_HEADER, 'x-session-affinity': await md5Hex(affinityInput) },
+		extraHeaders: { 'x-session-affinity': await md5Hex(affinityInput) },
 		signal: c.req.raw.signal,
 	});
 }
