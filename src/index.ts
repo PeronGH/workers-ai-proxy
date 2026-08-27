@@ -59,7 +59,8 @@ app.onError((err, c) => {
 	return c.json({ error: { message: err.message, stack: err.stack } }, 500);
 });
 
-// Hash cache affinity inputs into a stable, opaque token. Workers exposes MD5 through Web Crypto.
+// The affinity fallback embeds the API key, so it's hashed into a stable, opaque token that can
+// safely travel as a header. Workers exposes MD5 through Web Crypto.
 async function md5Hex(input: string): Promise<string> {
 	const digest = await crypto.subtle.digest('MD5', new TextEncoder().encode(input));
 	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -83,12 +84,15 @@ const requireApiKey = createMiddleware<{ Bindings: Env; Variables: Variables }>(
 // for prefix-cache hits. https://developers.cloudflare.com/workers-ai/features/prompt-caching/
 async function run(c: Context<{ Bindings: Env; Variables: Variables }>, model: keyof AiModels, inputs: RunInputs): Promise<Response> {
 	const { prompt_cache_key, ...runInputs } = inputs;
-	const affinityInput =
-		prompt_cache_key ?? c.req.header('x-session-affinity') ?? JSON.stringify([c.get('apiKey'), c.req.header('CF-Connecting-IP') ?? '']);
+	// Client-supplied affinity tokens pass through unhashed; only the derived fallback is hashed.
+	const affinity =
+		c.req.header('x-session-affinity') ??
+		prompt_cache_key ??
+		(await md5Hex(JSON.stringify([c.get('apiKey'), c.req.header('CF-Connecting-IP') ?? ''])));
 	return c.env.AI.run(model, runInputs, {
 		returnRawResponse: true,
 		gateway: GATEWAY,
-		extraHeaders: { 'x-session-affinity': await md5Hex(affinityInput) },
+		extraHeaders: { 'x-session-affinity': affinity },
 		signal: c.req.raw.signal,
 	});
 }
