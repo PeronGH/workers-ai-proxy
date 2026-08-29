@@ -35,7 +35,7 @@ type RunInputs = Record<string, unknown> & { prompt_cache_key?: string };
 // https://developers.cloudflare.com/ai-gateway/integrations/aig-workers-ai-binding/
 const GATEWAY: GatewayOptions = {
 	id: 'proxy',
-	retries: { maxAttempts: 5, retryDelayMs: 100, backoff: 'exponential' },
+	retries: { maxAttempts: 5, retryDelayMs: 100, backoff: 'constant' },
 	skipCache: true,
 	collectLog: false,
 };
