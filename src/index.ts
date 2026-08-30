@@ -87,10 +87,8 @@ async function run(c: Context<{ Bindings: Env; Variables: Variables }>, model: k
 	const ua = c.req.header('User-Agent') ?? '';
 	const affinityInput = c.req.header('x-session-affinity') ?? prompt_cache_key ?? JSON.stringify([c.get('apiKey'), ip]);
 	const session = await md5Hex(affinityInput);
-	// The gateway only sees this Worker, so the caller is forwarded as metadata instead. Which key
-	// feeds the dashboard's user attribution is undocumented, so spell the id three ways — that
-	// fills the five-entry ceiling exactly, and a sixth entry would be dropped.
-	// https://developers.cloudflare.com/ai-gateway/observability/custom-metadata/
+	// Which metadata key drives the dashboard's user attribution is undocumented, so spell it three
+	// ways. That fills the five-entry ceiling exactly; a sixth would be dropped.
 	const userId = `${ip}-${ua}`;
 	return c.env.AI.run(model, runInputs, {
 		returnRawResponse: true,
