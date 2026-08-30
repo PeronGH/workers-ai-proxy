@@ -87,11 +87,14 @@ async function run(c: Context<{ Bindings: Env; Variables: Variables }>, model: k
 	const ua = c.req.header('User-Agent') ?? '';
 	const affinityInput = c.req.header('x-session-affinity') ?? prompt_cache_key ?? JSON.stringify([c.get('apiKey'), ip]);
 	const session = await md5Hex(affinityInput);
+	// The gateway only sees this Worker, so the caller is forwarded as metadata instead. Which key
+	// feeds the dashboard's user attribution is undocumented, so spell the id three ways — that
+	// fills the five-entry ceiling exactly, and a sixth entry would be dropped.
+	// https://developers.cloudflare.com/ai-gateway/observability/custom-metadata/
+	const userId = `${ip}-${ua}`;
 	return c.env.AI.run(model, runInputs, {
 		returnRawResponse: true,
-		// The gateway only sees this Worker, so the caller is forwarded as metadata instead.
-		// https://developers.cloudflare.com/ai-gateway/observability/custom-metadata/
-		gateway: { ...GATEWAY, metadata: { ip, ua, userId: `${ip}-${ua}` } },
+		gateway: { ...GATEWAY, metadata: { ip, ua, userId, user: userId, user_id: userId } },
 		extraHeaders: {
 			'x-session-affinity': session,
 			// Log that metadata but never the prompt or the completion. Only a per-request
