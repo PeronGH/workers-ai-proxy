@@ -81,10 +81,6 @@ const requireApiKey = createMiddleware<{ Bindings: Env; Variables: Variables }>(
 // pass straight back to the client. The request's abort signal is threaded in so a client disconnect
 // cancels the in-flight run. Session affinity routes same-session requests to the same model instance
 // for prefix-cache hits. https://developers.cloudflare.com/workers-ai/features/prompt-caching/
-//
-// Each gateway log is tagged with the caller — the gateway itself only sees this Worker, so the
-// client's address and user agent have to be forwarded as metadata (max 5 flat entries).
-// https://developers.cloudflare.com/ai-gateway/observability/custom-metadata/
 async function run(c: Context<{ Bindings: Env; Variables: Variables }>, model: keyof AiModels, inputs: RunInputs): Promise<Response> {
 	const { prompt_cache_key, ...runInputs } = inputs;
 	const ip = c.req.header('CF-Connecting-IP') ?? '';
@@ -93,14 +89,13 @@ async function run(c: Context<{ Bindings: Env; Variables: Variables }>, model: k
 	const session = await md5Hex(affinityInput);
 	return c.env.AI.run(model, runInputs, {
 		returnRawResponse: true,
-		gateway: {
-			...GATEWAY,
-			metadata: { ip, ua, userId: `${ip}-${ua}` },
-		},
+		// The gateway only sees this Worker, so the caller is forwarded as metadata instead.
+		// https://developers.cloudflare.com/ai-gateway/observability/custom-metadata/
+		gateway: { ...GATEWAY, metadata: { ip, ua, userId: `${ip}-${ua}` } },
 		extraHeaders: {
 			'x-session-affinity': session,
-			// Keep the metadata above but never persist the prompt or the completion. Only a
-			// per-request header can draw that line; the gateway has no setting for it.
+			// Log that metadata but never the prompt or the completion. Only a per-request
+			// header draws that line; the gateway has no setting for it.
 			'cf-aig-collect-log-payload': 'false',
 		},
 		signal: c.req.raw.signal,
