@@ -89,7 +89,7 @@ async function run(c: Context<{ Bindings: Env; Variables: Variables }>, model: k
 	const session = await md5Hex(affinityInput);
 	return c.env.AI.run(model, runInputs, {
 		returnRawResponse: true,
-		gateway: { ...GATEWAY, metadata: { ip, ua } },
+		gateway: { ...GATEWAY, metadata: { ip } },
 		extraHeaders: {
 			'x-session-affinity': session,
 			'User-Agent': ua,
