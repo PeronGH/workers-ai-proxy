@@ -87,12 +87,9 @@ async function run(c: Context<{ Bindings: Env; Variables: Variables }>, model: k
 	const ua = c.req.header('User-Agent') ?? '';
 	const affinityInput = c.req.header('x-session-affinity') ?? prompt_cache_key ?? JSON.stringify([c.get('apiKey'), ip]);
 	const session = await md5Hex(affinityInput);
-	// Which metadata key drives the dashboard's user attribution is undocumented, so spell it three
-	// ways. That fills the five-entry ceiling exactly; a sixth would be dropped.
-	const userId = `${ip}-${ua}`;
 	return c.env.AI.run(model, runInputs, {
 		returnRawResponse: true,
-		gateway: { ...GATEWAY, metadata: { ip, ua, userId, user: userId, user_id: userId } },
+		gateway: { ...GATEWAY, metadata: { ip, ua } },
 		extraHeaders: {
 			'x-session-affinity': session,
 			// Log that metadata but never the prompt or the completion. Only a per-request
