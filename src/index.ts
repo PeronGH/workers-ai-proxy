@@ -31,13 +31,13 @@ type CustomInputs = Omit<ChatBody, 'chat_template_kwargs'> & {
 type RunInputs = Record<string, unknown> & { prompt_cache_key?: string };
 
 // Every run goes through this AI Gateway, which owns retries. Retry as hard as the gateway permits
-// — 5 attempts is its ceiling and 100ms its delay floor — and keep no response cache or logs.
+// — 5 attempts is its ceiling and 100ms its delay floor — and serve no cached responses.
 // https://developers.cloudflare.com/ai-gateway/integrations/aig-workers-ai-binding/
 const GATEWAY: GatewayOptions = {
 	id: 'proxy',
 	retries: { maxAttempts: 5, retryDelayMs: 100, backoff: 'constant' },
 	skipCache: true,
-	collectLog: false,
+	collectLog: true,
 };
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -81,14 +81,27 @@ const requireApiKey = createMiddleware<{ Bindings: Env; Variables: Variables }>(
 // pass straight back to the client. The request's abort signal is threaded in so a client disconnect
 // cancels the in-flight run. Session affinity routes same-session requests to the same model instance
 // for prefix-cache hits. https://developers.cloudflare.com/workers-ai/features/prompt-caching/
+//
+// Each gateway log is tagged with the caller — the gateway itself only sees this Worker, so the
+// client's address and user agent have to be forwarded as metadata (max 5 flat entries).
+// https://developers.cloudflare.com/ai-gateway/observability/custom-metadata/
 async function run(c: Context<{ Bindings: Env; Variables: Variables }>, model: keyof AiModels, inputs: RunInputs): Promise<Response> {
 	const { prompt_cache_key, ...runInputs } = inputs;
 	const affinityInput =
 		c.req.header('x-session-affinity') ?? prompt_cache_key ?? JSON.stringify([c.get('apiKey'), c.req.header('CF-Connecting-IP') ?? '']);
+	const session = await md5Hex(affinityInput);
 	return c.env.AI.run(model, runInputs, {
 		returnRawResponse: true,
-		gateway: GATEWAY,
-		extraHeaders: { 'x-session-affinity': await md5Hex(affinityInput) },
+		gateway: {
+			...GATEWAY,
+			metadata: { ip: c.req.header('CF-Connecting-IP') ?? '', ua: c.req.header('User-Agent') ?? '' },
+		},
+		extraHeaders: {
+			'x-session-affinity': session,
+			// Keep the metadata above but never persist the prompt or the completion. Only a
+			// per-request header can draw that line; the gateway has no setting for it.
+			'cf-aig-collect-log-payload': 'false',
+		},
 		signal: c.req.raw.signal,
 	});
 }
