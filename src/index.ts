@@ -87,14 +87,15 @@ const requireApiKey = createMiddleware<{ Bindings: Env; Variables: Variables }>(
 // https://developers.cloudflare.com/ai-gateway/observability/custom-metadata/
 async function run(c: Context<{ Bindings: Env; Variables: Variables }>, model: keyof AiModels, inputs: RunInputs): Promise<Response> {
 	const { prompt_cache_key, ...runInputs } = inputs;
-	const affinityInput =
-		c.req.header('x-session-affinity') ?? prompt_cache_key ?? JSON.stringify([c.get('apiKey'), c.req.header('CF-Connecting-IP') ?? '']);
+	const ip = c.req.header('CF-Connecting-IP') ?? '';
+	const ua = c.req.header('User-Agent') ?? '';
+	const affinityInput = c.req.header('x-session-affinity') ?? prompt_cache_key ?? JSON.stringify([c.get('apiKey'), ip]);
 	const session = await md5Hex(affinityInput);
 	return c.env.AI.run(model, runInputs, {
 		returnRawResponse: true,
 		gateway: {
 			...GATEWAY,
-			metadata: { ip: c.req.header('CF-Connecting-IP') ?? '', ua: c.req.header('User-Agent') ?? '' },
+			metadata: { ip, ua, userId: `${ip}-${ua}` },
 		},
 		extraHeaders: {
 			'x-session-affinity': session,
