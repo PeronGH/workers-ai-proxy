@@ -92,6 +92,7 @@ async function run(c: Context<{ Bindings: Env; Variables: Variables }>, model: k
 		gateway: { ...GATEWAY, metadata: { ip, ua } },
 		extraHeaders: {
 			'x-session-affinity': session,
+			'User-Agent': ua,
 			// Log that metadata but never the prompt or the completion. Only a per-request
 			// header draws that line; the gateway has no setting for it.
 			'cf-aig-collect-log-payload': 'false',
