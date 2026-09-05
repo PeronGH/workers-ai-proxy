@@ -12,6 +12,10 @@
 	},
 	"upload_source_maps": true,
 	"compatibility_flags": ["nodejs_compat"],
+	/** Ed25519 public JWK that proxied JWTs are verified against; mint with `bun run jwt` */
+	"vars": {
+		"JWT_PUBLIC_KEY": { "crv": "Ed25519", "kty": "OKP", "x": "Dxje9hCGtCKnZ7xmS1IlkNc271bo5M6l3J5rHIBsb9k" },
+	},
 	/**
 	 * Workers AI binding
 	 * https://developers.cloudflare.com/workers-ai/configuration/bindings/

@@ -33,5 +33,5 @@
 		"skipLibCheck": true,
 		"types": ["./worker-configuration.d.ts", "node"]
 	},
-	"include": ["worker-configuration.d.ts", "src/**/*.ts"]
+	"include": ["worker-configuration.d.ts", "src/**/*.ts", "scripts/**/*.ts"]
 }

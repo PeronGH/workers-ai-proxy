@@ -9,7 +9,8 @@
 		"format": "prettier --write .",
 		"lint": "eslint . && prettier --check .",
 		"typecheck": "tsc --noEmit",
-		"cf-typegen": "wrangler types"
+		"cf-typegen": "wrangler types",
+		"jwt": "bun scripts/jwt.ts"
 	},
 	"devDependencies": {
 		"@anthropic-ai/sdk": "^0.105.0",
@@ -23,6 +24,7 @@
 	},
 	"dependencies": {
 		"@peron_js/oai2ant": "^0.1.2",
-		"hono": "^4.13.5"
+		"hono": "^4.13.5",
+		"jose": "^6.2.11"
 	}
 }

@@ -1,14 +1,12 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { createMiddleware } from 'hono/factory';
 import { HTTPException } from 'hono/http-exception';
 import type { Context } from 'hono';
 import { antReqToOaiReq, oaiResToAntRes, oaiStreamToAntStream } from '@peron_js/oai2ant';
 import type { OpenAIResponse, OpenAIStreamChunk } from '@peron_js/oai2ant';
 import type { MessageCreateParams } from '@anthropic-ai/sdk/resources/messages';
 import { parseSseData, sseFromItems } from './stream';
-
-type Variables = { apiKey: string };
+import { requireAuth, type AuthEnv } from './auth';
 
 // OpenAI clients may send reasoning_effort: "none"; the Workers type only allows low/medium/high.
 type ChatBody = Omit<ChatCompletionsMessagesInput, 'reasoning_effort'> & {
@@ -40,7 +38,7 @@ const GATEWAY: GatewayOptions = {
 	collectLog: true,
 };
 
-const app = new Hono<{ Bindings: Env; Variables: Variables }>();
+const app = new Hono<AuthEnv>();
 
 app.use(
 	'*',
@@ -65,31 +63,22 @@ async function md5Hex(input: string): Promise<string> {
 	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-// Require an API key on every proxied request, stashing it for downstream session affinity.
-// Accept OpenAI-style `Authorization: Bearer` and Anthropic-style `x-api-key`.
-const requireApiKey = createMiddleware<{ Bindings: Env; Variables: Variables }>(async (c, next) => {
-	const key = c.req.header('Authorization')?.replace(/^Bearer\s+/i, '') ?? c.req.header('x-api-key');
-	if (!key) {
-		throw new HTTPException(401, { message: 'API key is required' });
-	}
-
-	c.set('apiKey', key);
-	return next();
-});
-
-// Run a model through the gateway with the raw response returned; upstream failures, including 429,
-// pass straight back to the client. The request's abort signal is threaded in so a client disconnect
+// Authorize the model against the caller's token, then run it through the gateway with the raw
+// response returned; upstream failures, including 429, pass straight back to the client. The request's abort signal is threaded in so a client disconnect
 // cancels the in-flight run. Session affinity routes same-session requests to the same model instance
 // for prefix-cache hits. https://developers.cloudflare.com/workers-ai/features/prompt-caching/
-async function run(c: Context<{ Bindings: Env; Variables: Variables }>, model: keyof AiModels, inputs: RunInputs): Promise<Response> {
+async function run(c: Context<AuthEnv>, model: keyof AiModels, inputs: RunInputs): Promise<Response> {
+	const user = c.get('user');
+	if (!user.models.test(model)) throw new HTTPException(403, { message: `Model ${model} is not allowed` });
+
 	const { prompt_cache_key, ...runInputs } = inputs;
 	const ip = c.req.header('CF-Connecting-IP') ?? '';
 	const ua = c.req.header('User-Agent') ?? '';
-	const affinityInput = c.req.header('x-session-affinity') ?? prompt_cache_key ?? JSON.stringify([c.get('apiKey'), ip]);
+	const affinityInput = c.req.header('x-session-affinity') ?? prompt_cache_key ?? JSON.stringify([user.id, ip]);
 	const session = await md5Hex(affinityInput);
 	return c.env.AI.run(model, runInputs, {
 		returnRawResponse: true,
-		gateway: { ...GATEWAY, metadata: { ip, key: c.get('apiKey') } },
+		gateway: { ...GATEWAY, metadata: { ip, userId: user.id } },
 		extraHeaders: {
 			'x-session-affinity': session,
 			'User-Agent': ua,
@@ -101,8 +90,8 @@ async function run(c: Context<{ Bindings: Env; Variables: Variables }>, model: k
 	});
 }
 
-app.use('/run/*', requireApiKey);
-app.use('/v1/*', requireApiKey);
+app.use('/run/*', requireAuth);
+app.use('/v1/*', requireAuth);
 
 // Run a model by id, forwarding the request body verbatim: POST /run/@cf/<model>
 app.post('/run/:model{.+}', async (c) => {
