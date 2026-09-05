@@ -26,7 +26,7 @@ type CustomInputs = Omit<ChatBody, 'chat_template_kwargs'> & {
 	};
 };
 
-type RunInputs = Record<string, unknown> & { prompt_cache_key?: string };
+type RunInputs = Record<string, unknown> & { prompt_cache_key?: string; messages?: { role: string }[] };
 
 // Every run goes through this AI Gateway, which owns retries. Retry as hard as the gateway permits
 // — 5 attempts is its ceiling and 100ms its delay floor — and serve no cached responses.
@@ -74,7 +74,8 @@ async function run(c: Context<AuthEnv>, model: keyof AiModels, inputs: RunInputs
 	const { prompt_cache_key, ...runInputs } = inputs;
 	const ip = c.req.header('CF-Connecting-IP') ?? '';
 	const ua = c.req.header('User-Agent') ?? '';
-	const affinityInput = c.req.header('x-session-affinity') ?? prompt_cache_key ?? JSON.stringify([user.id, ip]);
+	const firstUserMessage = runInputs.messages?.find((m) => m.role === 'user');
+	const affinityInput = c.req.header('x-session-affinity') ?? prompt_cache_key ?? JSON.stringify([user.id, ip, firstUserMessage]);
 	const session = await md5Hex(affinityInput);
 	return c.env.AI.run(model, runInputs, {
 		returnRawResponse: true,
