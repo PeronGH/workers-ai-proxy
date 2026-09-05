@@ -2,7 +2,7 @@
 
 A Cloudflare Worker that exposes [Workers AI](https://developers.cloudflare.com/workers-ai/) behind OpenAI- and Anthropic-compatible endpoints, so any OpenAI or Anthropic SDK can call Workers AI models by pointing its base URL at the Worker.
 
-Every run goes through an [AI Gateway](https://developers.cloudflare.com/ai-gateway/) named `proxy` with retries on, caching off, and request metadata logged without prompts or completions. Requests are pinned to a model instance via `x-session-affinity` for prefix-cache hits, keyed on the client's `x-session-affinity` header, then `prompt_cache_key`, then the user id, client IP, and first user message. Gateway logs carry the client IP and user id.
+Every run goes through an [AI Gateway](https://developers.cloudflare.com/ai-gateway/) named `proxy` with retries on, caching off, and request metadata logged without prompts or completions. Requests are pinned to a model instance via `x-session-affinity` for prefix-cache hits, keyed on the client's `x-session-affinity` header, then `prompt_cache_key`, then the user id and first user message. Gateway logs carry the client IP and user id.
 
 ## Authentication
 

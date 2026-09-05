@@ -75,7 +75,7 @@ async function run(c: Context<AuthEnv>, model: keyof AiModels, inputs: RunInputs
 	const ip = c.req.header('CF-Connecting-IP') ?? '';
 	const ua = c.req.header('User-Agent') ?? '';
 	const firstUserMessage = runInputs.messages?.find((m) => m.role === 'user');
-	const affinityInput = c.req.header('x-session-affinity') ?? prompt_cache_key ?? JSON.stringify([user.id, ip, firstUserMessage]);
+	const affinityInput = c.req.header('x-session-affinity') ?? prompt_cache_key ?? JSON.stringify([user.id, firstUserMessage]);
 	const session = await md5Hex(affinityInput);
 	return c.env.AI.run(model, runInputs, {
 		returnRawResponse: true,
